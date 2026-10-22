@@ -1,0 +1,106 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Wordle</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            background: #222;
+            color: white;
+        }
+
+        input, button {
+            padding: 10px;
+            margin: 5px;
+            font-size: 18px;
+        }
+
+        .letter {
+            display: inline-block;
+            width: 35px;
+            height: 35px;
+            line-height: 35px;
+            margin: 3px;
+            background: #555;
+            font-weight: bold;
+        }
+
+        .green { background: #538d4e; }
+        .yellow { background: #b59f3b; }
+        .gray { background: #333; }
+    </style>
+</head>
+<body>
+
+    <h1>Wordle</h1>
+    <p>Угадай слово из 5 букв за 6 попыток!</p>
+
+    <input id="guess" maxlength="5" placeholder="Введи слово">
+    <button onclick="checkWord()">Проверить</button>
+
+    <div id="board"></div>
+    <p id="message"></p>
+
+    <script>
+        const words = ["КНИГА", "ШКОЛА", "МЫШКА", "ЛАМПА", "ПТИЦА"];
+
+        const secret = words[
+            Math.floor(Math.random() * words.length)
+        ];
+
+        let attempts = 0;
+        const maxAttempts = 6;
+
+        function checkWord() {
+            const input = document.getElementById("guess");
+            const word = input.value.toUpperCase().trim();
+            const message = document.getElementById("message");
+            const board = document.getElementById("board");
+
+            if (word.length !== 5) {
+                message.textContent = "Введи слово из 5 букв!";
+                return;
+            }
+
+            if (attempts >= maxAttempts) return;
+
+            const row = document.createElement("div");
+
+            for (let i = 0; i < 5; i++) {
+                const cell = document.createElement("span");
+                cell.className = "letter";
+
+                if (word[i] === secret[i]) {
+                    cell.classList.add("green");
+                } else if (secret.includes(word[i])) {
+                    cell.classList.add("yellow");
+                } else {
+                    cell.classList.add("gray");
+                }
+
+                cell.textContent = word[i];
+                row.appendChild(cell);
+            }
+
+            board.appendChild(row);
+            attempts++;
+            input.value = "";
+
+            if (word === secret) {
+                message.textContent = "🎉 Ты угадал слово!";
+                input.disabled = true;
+            } else if (attempts === maxAttempts) {
+                message.textContent = "😢 Попытки закончились! Слово: " + secret;
+                input.disabled = true;
+            } else {
+                message.textContent =
+                    "Осталось попыток: " + (maxAttempts - attempts);
+            }
+        }
+    </script>
+
+</body>
+</html>
