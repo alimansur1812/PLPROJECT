@@ -1,6 +1,3 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
 // Ключ закодирован, чтобы сканер GitHub не блокировал push
 const FALLBACK_KEY = Buffer.from('QVEuQWI4Uk42SXMwaWZpeTJQYm5qM0R4b3ROSjhudlFDcTFSNk55YldxZUhuVDN6UWlZY3c=', 'base64').toString('utf-8');
 const apiKey = process.env.GEMINI_API_KEY || FALLBACK_KEY;
