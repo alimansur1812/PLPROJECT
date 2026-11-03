@@ -100,5 +100,13 @@ export async function getWordForGame(db, theme = 'general', length = 5) {
   return row;
 }
 
-// Экспорт для server/rooms.js
+// Экспорты, требуемые routes.js и rooms.js
 export const pickWord = getWordForGame;
+
+export async function dailyWord(db) {
+  return await getWordForGame(db, 'general', 5);
+}
+
+export async function prewarmTheme(db, theme, length = 5) {
+  return await getWordForGame(db, theme, length);
+}
