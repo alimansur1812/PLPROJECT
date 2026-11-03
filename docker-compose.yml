@@ -1,0 +1,36 @@
+# Runs the app together with PostgreSQL:   docker compose up --build
+# Then open http://localhost:3000
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wordforge
+      POSTGRES_PASSWORD: wordforge
+      POSTGRES_DB: wordforge
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wordforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://wordforge:wordforge@db:5432/wordforge
+      # Put a long random value in a .env file next to this one: JWT_SECRET=...
+      JWT_SECRET: ${JWT_SECRET:-change-me-before-a-real-deployment}
+      # AI is optional. Set any one of these in the same .env file.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  dbdata:

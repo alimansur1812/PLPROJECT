@@ -1,0 +1,17 @@
+{
+  "name": "wordforge",
+  "version": "1.0.0",
+  "description": "WordForge - a themed Wordle with AI-generated words, accounts, stats, leaderboards and real-time duels",
+  "type": "module",
+  "main": "server/index.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "dev": "node --watch --env-file-if-exists=.env server/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "ws": "^8.18.0"
+  }
+}
