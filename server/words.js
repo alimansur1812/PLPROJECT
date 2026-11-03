@@ -48,7 +48,6 @@ export async function getWordForGame(db, theme = 'general', length = 5) {
 
   if (!row && cleanTheme !== 'general') {
     try {
-      // Ищем любую функцию генерации, которая есть в ai.js
       const genFn = ai.generateThemeWords || ai.generateWordsForTheme || ai.generateWords || ai.generateWord;
       if (typeof genFn === 'function') {
         let generated = await genFn(cleanTheme, length);
@@ -100,3 +99,6 @@ export async function getWordForGame(db, theme = 'general', length = 5) {
 
   return row;
 }
+
+// Экспорт для server/rooms.js
+export const pickWord = getWordForGame;
