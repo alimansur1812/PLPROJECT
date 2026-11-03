@@ -1,4 +1,4 @@
-import { generateThemeWords } from './ai.js';
+import * as ai from './ai.js';
 
 export const BANNED_GENERIC_WORDS = new Set([
   'failed', 'pocket', 'button', 'window', 'mirror', 'carpet',
@@ -48,32 +48,39 @@ export async function getWordForGame(db, theme = 'general', length = 5) {
 
   if (!row && cleanTheme !== 'general') {
     try {
-      const generated = await generateThemeWords(cleanTheme, length);
-      if (generated && generated.length > 0) {
-        const stmt = await db.prepare(
-          'INSERT OR IGNORE INTO words (word, length, theme, hint1, hint2, hint3, explanation) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        );
-        for (const item of generated) {
-          const w = item.word ? item.word.trim().toLowerCase() : '';
-          if (w.length === length && !BANNED_GENERIC_WORDS.has(w)) {
-            KNOWN_WORDS.add(w);
-            await stmt.run(
-              w,
-              length,
-              cleanTheme,
-              sanitizeHintText(item.hint1),
-              sanitizeHintText(item.hint2),
-              sanitizeHintText(item.hint3),
-              item.explanation || null
-            );
+      // Ищем любую функцию генерации, которая есть в ai.js
+      const genFn = ai.generateThemeWords || ai.generateWordsForTheme || ai.generateWords || ai.generateWord;
+      if (typeof genFn === 'function') {
+        let generated = await genFn(cleanTheme, length);
+        if (generated && !Array.isArray(generated)) generated = [generated];
+        
+        if (Array.isArray(generated) && generated.length > 0) {
+          const stmt = await db.prepare(
+            'INSERT OR IGNORE INTO words (word, length, theme, hint1, hint2, hint3, explanation) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          );
+          for (const item of generated) {
+            const rawWord = typeof item === 'string' ? item : item?.word;
+            const w = rawWord ? String(rawWord).trim().toLowerCase() : '';
+            if (w.length === length && !BANNED_GENERIC_WORDS.has(w)) {
+              KNOWN_WORDS.add(w);
+              await stmt.run(
+                w,
+                length,
+                cleanTheme,
+                sanitizeHintText(item?.hint1 || item?.hint),
+                sanitizeHintText(item?.hint2),
+                sanitizeHintText(item?.hint3),
+                item?.explanation || null
+              );
+            }
           }
-        }
-        await stmt.finalize();
+          await stmt.finalize();
 
-        row = await db.get(
-          'SELECT * FROM words WHERE LOWER(theme) = ? AND length = ? ORDER BY RANDOM() LIMIT 1',
-          [cleanTheme, length]
-        );
+          row = await db.get(
+            'SELECT * FROM words WHERE LOWER(theme) = ? AND length = ? ORDER BY RANDOM() LIMIT 1',
+            [cleanTheme, length]
+          );
+        }
       }
     } catch (e) {
       console.error('[ai] generation error:', e);
