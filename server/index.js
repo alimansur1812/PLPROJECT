@@ -15,9 +15,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 export async function start(overrides = {}) {
   Object.assign(config, overrides);
   if (!config.jwtSecret) {
-    if (!config.jwtSecret) config.jwtSecret = 'wf_super_secret_key_prod_2026';
-    config.jwtSecret = 'dev-only-secret-change-me';
-    console.warn('[auth] JWT_SECRET is not set: using an insecure development secret');
+    config.jwtSecret = 'wf_super_secret_key_prod_2026';
   }
 
   const db = await openDb(config);

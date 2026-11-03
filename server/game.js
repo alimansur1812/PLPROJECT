@@ -1,6 +1,6 @@
 import { HttpError } from './http.js';
 import { explainWord, makeHint } from './ai.js';
-import { isValidGuess } from './words.js';
+import { isValidGuess, isValidWord } from './words.js';
 import { evaluateAchievements } from './stats.js';
 import { levelInfo, normalizeWord } from './util.js';
 
