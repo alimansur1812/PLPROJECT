@@ -1,5 +1,35 @@
 const FALLBACK_KEY = Buffer.from('QVEuQWI4Uk42SXMwaWZpeTJQYm5qM0R4b3ROSjhudlFDcTFSNk55YldxZUhuVDN6UWlZY3c=', 'base64').toString('utf-8');
-const apiKey = process.env.GEMINI_API_KEY || FALLBACK_KEY;
+
+const rawProvider = (process.env.AI_PROVIDER || '').trim().toLowerCase();
+
+const rawEnvKey = (
+  process.env.GEMINI_API_KEY ||
+  process.env.AI_API_KEY ||
+  process.env.GOOGLE_API_KEY ||
+  process.env.OPENAI_API_KEY ||
+  process.env.ANTHROPIC_API_KEY ||
+  ''
+).trim().replace(/^['"]|['"]$/g, '');
+
+const apiKey = rawProvider === 'off'
+  ? ''
+  : (rawEnvKey || (process.env.DISABLE_FALLBACK_KEY === '1' ? '' : FALLBACK_KEY));
+
+function detectProvider(key) {
+  if (rawProvider && rawProvider !== 'off') return rawProvider;
+  if (process.env.ANTHROPIC_API_KEY || key.startsWith('sk-ant-')) return 'anthropic';
+  if (process.env.OPENAI_API_KEY || key.startsWith('sk-') || key.startsWith('gsk_')) return 'openai';
+  return 'gemini';
+}
+
+function detectModel(providerName) {
+  if (process.env.AI_MODEL && process.env.AI_MODEL.trim()) return process.env.AI_MODEL.trim();
+  if (providerName === 'anthropic') return 'claude-haiku-4-5';
+  if (providerName === 'openai') return apiKey.startsWith('gsk_') ? 'llama-3.3-70b-versatile' : null;
+  return 'gemini-3.8-flash';
+}
+
+const providerName = detectProvider(apiKey);
 const sqlitePath = process.env.SQLITE_PATH || process.env.DATABASE_PATH || process.env.DB_PATH || process.env.DB_FILE || './data/wordforge.db';
 
 export const config = {
@@ -15,9 +45,9 @@ export const config = {
   dbFile: sqlitePath,
   ai: apiKey
     ? {
-        name: process.env.AI_PROVIDER || 'gemini',
+        name: providerName,
         key: apiKey,
-        model: process.env.AI_MODEL || 'gemini-2.5-flash',
+        model: detectModel(providerName),
       }
     : null,
 };

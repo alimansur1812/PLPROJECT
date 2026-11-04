@@ -12,19 +12,65 @@ let realProviderActive = false;
 
 async function readJson(response) {
   const text = await response.text();
-  if (!response.ok) throw new Error(`AI HTTP ${response.status}: ${text.slice(0, 200)}`);
+  if (!response.ok) {
+    const err = new Error(`AI HTTP ${response.status}: ${text.slice(0, 300)}`);
+    err.status = response.status;
+    err.body = text;
+    throw err;
+  }
   return JSON.parse(text);
 }
 
+const FALLBACK_GEMINI_MODELS = [
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-8b',
+  'gemini-2.0-flash',
+];
+
+const DEFAULT_GROQ_MODELS = [
+  'openai/gpt-oss-20b',
+  'qwen/qwen3.8-27b',
+  'openai/gpt-oss-120b',
+];
+
+let cachedGroqModels = null;
+async function fetchAvailableGroqModels(key) {
+  if (cachedGroqModels) return cachedGroqModels;
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/models', {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const list = (data.data || [])
+        .map((m) => m.id)
+        .filter((id) => !/whisper|guard|orpheus|safeguard|vision/i.test(id));
+      if (list.length > 0) {
+        console.log(`[ai] active Groq models for your key: ${list.join(', ')}`);
+        cachedGroqModels = list;
+        return list;
+      }
+    }
+  } catch {}
+  return DEFAULT_GROQ_MODELS;
+}
+
 const PROVIDERS = {
-  gemini: (key, model) => async (prompt, { system, json, temperature = 0.3, maxTokens = 1200 }) => {
-    const isFlash25OrNewer = /2\.5|3\./.test(model);
-    const fetchWithRetry = async (retries = 1) => {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        {
+  gemini: (key, initialModel) => {
+    let activeModel = initialModel || 'gemini-1.5-flash';
+
+    return async (prompt, { system, json, temperature = 0.3, maxTokens = 1200 }) => {
+      const cleanKey = String(key).trim();
+
+      const callModel = async (targetModel, includeThinking, retries = 1) => {
+        const encodedModel = encodeURIComponent(targetModel);
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodedModel}:generateContent`;
+        const response = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': cleanKey,
+          },
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: system }] },
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -32,37 +78,121 @@ const PROVIDERS = {
               temperature,
               maxOutputTokens: maxTokens,
               ...(json && { responseMimeType: 'application/json' }),
-              ...(isFlash25OrNewer && { thinkingConfig: { thinkingBudget: 0 } }),
+              ...(includeThinking && { thinkingConfig: { thinkingBudget: 0 } }),
             },
           }),
-          signal: AbortSignal.timeout(15_000),
-        },
-      );
-      if (response.status === 429 && retries > 0) {
-        await new Promise((r) => setTimeout(r, 1000));
-        return fetchWithRetry(retries - 1);
+          signal: AbortSignal.timeout(20_000),
+        });
+
+        if ((response.status === 429 || response.status === 503) && retries > 0) {
+          await new Promise((r) => setTimeout(r, 1200));
+          return callModel(targetModel, includeThinking, retries - 1);
+        }
+        if (response.status === 400 && includeThinking) {
+          return callModel(targetModel, false, 0);
+        }
+
+        const data = await readJson(response);
+        const parts = data.candidates?.[0]?.content?.parts ?? [];
+        const nonThought = parts.filter((part) => !part.thought).map((part) => part.text ?? '').join('');
+        return nonThought || parts.map((part) => part.text ?? '').join('');
+      };
+
+      const candidates = [
+        activeModel,
+        ...FALLBACK_GEMINI_MODELS.filter((m) => m !== activeModel),
+      ];
+
+      let lastError = null;
+      for (let i = 0; i < candidates.length; i++) {
+        const candidateModel = candidates[i];
+        const useThinkingBudget = /2\.\d+-flash|flash/i.test(candidateModel);
+        try {
+          const out = await callModel(candidateModel, useThinkingBudget, 1);
+          if (activeModel !== candidateModel) {
+            console.log(`[ai] switched active Gemini model to ${candidateModel}`);
+            activeModel = candidateModel;
+          }
+          return out;
+        } catch (err) {
+          lastError = err;
+          const suggested = err.body?.match(/models\/(gemini-[a-z0-9.-]+)/i)?.[1];
+          if (suggested && !candidates.includes(suggested)) {
+            candidates.splice(i + 1, 0, suggested);
+          }
+          if (err.status === 404 || err.status === 400) continue;
+          break;
+        }
       }
-      const data = await readJson(response);
-      return (data.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? '').join('');
+      throw lastError || new Error('Gemini request failed');
     };
-    return fetchWithRetry();
+  },
+
+  groq: (key, initialModel) => {
+    let activeModel = initialModel || 'openai/gpt-oss-20b';
+
+    return async (prompt, { system, json, temperature = 0.3, maxTokens = 1024 }) => {
+      const cleanKey = key.trim();
+      const available = await fetchAvailableGroqModels(cleanKey);
+      const candidates = [
+        activeModel,
+        ...available.filter((m) => m !== activeModel),
+      ];
+
+      let lastError = null;
+      for (const candidateModel of candidates) {
+        try {
+          const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${cleanKey}`,
+            },
+            body: JSON.stringify({
+              model: candidateModel,
+              temperature,
+              max_tokens: maxTokens,
+              messages: [
+                { role: 'system', content: system },
+                { role: 'user', content: prompt },
+              ],
+              ...(json && { response_format: { type: 'json_object' } }),
+            }),
+            signal: AbortSignal.timeout(20_000),
+          });
+
+          const data = await readJson(response);
+          if (activeModel !== candidateModel) {
+            console.log(`[ai] switched active Groq model to ${candidateModel}`);
+            activeModel = candidateModel;
+          }
+          return data.choices?.[0]?.message?.content ?? '';
+        } catch (err) {
+          lastError = err;
+          if (err.status === 404 || err.status === 400) continue;
+          break;
+        }
+      }
+      throw lastError || new Error('Groq request failed');
+    };
   },
 
   anthropic: (key, model) => async (prompt, { system, temperature = 0.3, maxTokens = 1024 }) => {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key.trim(), 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({ model, max_tokens: maxTokens, temperature, system, messages: [{ role: 'user', content: prompt }] }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(20_000),
     });
     const data = await readJson(response);
     return (data.content ?? []).filter((block) => block.type === 'text').map((block) => block.text).join('');
   },
 
   openai: (key, model) => async (prompt, { system, json, temperature = 0.3, maxTokens = 1024 }) => {
+    const cleanKey = key.trim();
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cleanKey}` },
       body: JSON.stringify({
         model,
         temperature,
@@ -70,7 +200,7 @@ const PROVIDERS = {
         messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
         ...(json && { response_format: { type: 'json_object' } }),
       }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(20_000),
     });
     const data = await readJson(response);
     return data.choices?.[0]?.message?.content ?? '';
@@ -80,10 +210,12 @@ const PROVIDERS = {
 export function initAi() {
   provider = null;
   realProviderActive = false;
+  downUntil = 0;
   const { ai } = config;
-  if (!ai) return console.log('[ai] no API key: using the built-in word bank');
+  if (!ai || !ai.key) return console.log('[ai] no API key: using the built-in word bank');
   if (!ai.model) return console.warn(`[ai] ${ai.name} needs AI_MODEL to be set: AI features are off`);
-  provider = PROVIDERS[ai.name](ai.key, ai.model);
+  const factory = PROVIDERS[ai.name] || PROVIDERS.gemini;
+  provider = factory(ai.key, ai.model);
   realProviderActive = true;
   console.log(`[ai] provider=${ai.name} model=${ai.model}`);
 }
@@ -103,13 +235,16 @@ async function ask(prompt, { json = true, temperature = 0.3, maxTokens = 1200 } 
   try {
     return await provider(prompt, { system: SYSTEM, json, temperature, maxTokens });
   } catch (error) {
-    downUntil = Date.now() + 3_500;
+    downUntil = Date.now() + (realProviderActive ? 1_200 : 3_500);
+    if (realProviderActive) {
+      console.error('[ai] request failed:', error.message);
+    }
     throw error;
   }
 }
 
 export function parseJson(text) {
-  const clean = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const clean = String(text ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   try {
     return JSON.parse(clean);
   } catch {
@@ -126,14 +261,17 @@ export function parseJson(text) {
 const leaksWord = (text, word) => text.toLowerCase().replace(/ё/g, 'е').includes(word);
 const short = (value, max) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
 
-// Автоматическая очистка любых технических префиксов из подсказок
+function maskLeakedWord(clue, word) {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/е/g, '[её]');
+  return clue.replace(new RegExp(escaped, 'gi'), '___');
+}
+
 export function sanitizeHintText(text) {
   if (!text || typeof text !== 'string') return '';
   let cleaned = text.trim();
-  // Срезаем фразы вроде "Артефакт общего назначения.", "Lore concept:", "A location type; " и т.п.
   cleaned = cleaned
-    .replace(/^(?:артефакт|локация|персонаж|способность|фракция|лор|концепт|предмет|сущность|тип локации|категория)(?:\s+[^.:;,\n]+)?[:;\-.]\s*/i, '')
-    .replace(/^(?:lore concept|location type|entity type|artifact type|character type|category hint|a location type|theme category hint)[:;\-.]\s*/i, '')
+    .replace(/^(?:артефакт|локация|персонаж|способность|фракция|лор|концепт|предмет|сущность|тип локации|категория)(?:\s+[^.:;,\n]+)?(?:[:;\-]\s*|\.\s+(?=\S))/i, '')
+    .replace(/^(?:lore concept|location type|entity type|artifact type|character type|category hint|a location type|theme category hint)(?:[:;\-]\s*|\.\s+(?=\S))/i, '')
     .trim();
 
   if (cleaned.length > 0) {
@@ -151,12 +289,12 @@ export const BANNED_GENERIC_WORDS = new Set([
   'school', 'office', 'market', 'bottle', 'mirror', 'pillow', 'carpet', 'pencil',
 ]);
 
-// ---- 1. Генерация слов ----
-export async function generateWords({ theme, language, length, difficulty, count = 12, exclude = [] }) {
+export async function generateWords({ theme, language, length, difficulty, count = 12, exclude = [], onExtraWord = null }) {
   const name = LANGUAGE_NAME[language];
   const level = ['iconic and widely recognized', 'well-known canonical', 'deep lore and challenging'][difficulty - 1] ?? 'well-known canonical';
+  const requestedCount = realProviderActive ? Math.max(count, 18) : count;
   const lengthRule = length
-    ? `Every word MUST be EXACTLY ${length} letters long`
+    ? `Every word MUST be EXACTLY ${length} letters long (count each letter carefully!)`
     : `Words can be ANY length between 4 and 8 letters (freely mix 4, 5, 6, 7, and 8 letter words)`;
   const excludeText = exclude.length
     ? `\nALREADY USED WORDS (STRICTLY FORBIDDEN — DO NOT REPEAT ANY OF THESE): ${exclude.slice(0, 80).join(', ')}\n`
@@ -170,16 +308,16 @@ export async function generateWords({ theme, language, length, difficulty, count
     `\nSTEP 1 — BILINGUAL CANONICAL RESOLUTION:\n` +
     `The theme "${theme}" might be written in any language or transliteration. Automatically resolve its canonical franchise/subject and generate all words and clues strictly in ${name}.\n\n` +
     `STEP 2 — DIVERSE CANONICAL POOL:\n` +
-    `Generate ${count} distinct single ${name} words spread across characters, locations, signature artifacts/weapons, abilities/spells, factions, and canonical lore terms.\n\n` +
+    `Generate ${requestedCount} distinct single ${name} words spread across characters, locations, signature artifacts/weapons, abilities/spells, factions, and canonical lore terms.\n\n` +
     `STEP 3 — AI CRITIC & STRICT RULES:\n` +
     `- NEVER pick mundane everyday objects or verbs (e.g. NEVER "pocket", "failed", "jacket", "phone", "knife", "wound").\n` +
     `- Words must be base-form NOUNS or proper names. NEVER use past-tense verbs.\n` +
     `- Exact canonical spelling in ${name}. NEVER truncate or alter spelling.\n` +
-    `- ${lengthRule}. Letters only. Difficulty: ${level}.\n` +
+    `- ${lengthRule}. Letters only (no spaces or hyphens). Difficulty: ${level}.\n` +
     `- For each word, write a concise clue in ${name} (max 90 chars) describing its role WITHOUT mentioning the word itself. Do NOT prepend category labels (e.g. do NOT write "Artifact:").\n\n` +
     `Reply with JSON only: {"words":[{"word":"...","clue":"..."}]}`;
 
-  const data = parseJson(await ask(prompt, { json: true, temperature: 0.35, maxTokens: 1500 }));
+  const data = parseJson(await ask(prompt, { json: true, temperature: 0.35, maxTokens: 1800 }));
   const list = Array.isArray(data) ? data : data?.words;
   if (!Array.isArray(list)) throw new Error('AI did not return a word list');
 
@@ -189,18 +327,26 @@ export async function generateWords({ theme, language, length, difficulty, count
 
   for (const item of list) {
     const word = normalizeWord(item?.word, language);
-    const rawClue = sanitizeHintText(short(item?.clue, 120));
-    const validLen = length ? word.length === length : word.length >= 4 && word.length <= 8;
-
-    if (!word || !validLen || seen.has(word) || !rawClue || leaksWord(rawClue, word)) continue;
+    if (!word || word.length < 4 || word.length > 8 || seen.has(word)) continue;
     if (isCustomTheme && BANNED_GENERIC_WORDS.has(word)) continue;
+
+    let rawClue = sanitizeHintText(short(item?.clue, 120));
+    if (realProviderActive && rawClue && leaksWord(rawClue, word)) {
+      rawClue = maskLeakedWord(rawClue, word);
+    }
+    if (!rawClue || leaksWord(rawClue, word)) continue;
+
+    const validLen = length ? word.length === length : true;
     seen.add(word);
-    result.push({ word, clue: rawClue });
+    if (validLen) {
+      result.push({ word, clue: rawClue });
+    } else if (typeof onExtraWord === 'function') {
+      onExtraWord({ word, clue: rawClue });
+    }
   }
   return result;
 }
 
-// ---- 2. Реактивные подсказки без ярлыков ----
 export async function makeHint({ word, theme, language, guesses, level, previousHints = [], clue = '' }) {
   const langName = LANGUAGE_NAME[language];
   const hasGuesses = guesses && guesses.length > 0;
@@ -237,7 +383,6 @@ export async function makeHint({ word, theme, language, guesses, level, previous
   return hint;
 }
 
-// ---- 3. Быстрая проверка слова ----
 export async function checkWord({ word, language, theme = 'general' }) {
   const prompt =
     `Word game guess: "${word}" (Language: ${LANGUAGE_NAME[language]}, Theme: "${theme}").\n` +
@@ -248,7 +393,6 @@ export async function checkWord({ word, language, theme = 'general' }) {
   return typeof data?.valid === 'boolean' ? data.valid : null;
 }
 
-// ---- 4. Разбор слова ----
 export async function explainWord({ word, theme, language }) {
   const prompt =
     `Explain "${word}" in the context of theme "${theme}" for a player, in ${LANGUAGE_NAME[language]}.\n` +

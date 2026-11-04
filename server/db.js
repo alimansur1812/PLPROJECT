@@ -32,11 +32,13 @@ async function openSqlite(path) {
 async function openPostgres(url) {
   const pg = (await import('pg')).default;
   pg.types.setTypeParser(20, Number); // BIGINT / COUNT(*) arrive as numbers, not strings
+  const needsSsl =
+    process.env.PGSSL === '1' ||
+    (process.env.PGSSL !== '0' && /sslmode=require|render\.com|neon\.tech|supabase\.co/i.test(url));
   const pool = new pg.Pool({
     connectionString: url,
     max: 10,
-    // Managed databases usually need TLS. Put ?sslmode=require in the URL, or set PGSSL=1.
-    ssl: process.env.PGSSL === '1' ? { rejectUnauthorized: false } : undefined,
+    ssl: needsSsl ? { rejectUnauthorized: false } : undefined,
   });
   return {
     dialect: 'pg',
