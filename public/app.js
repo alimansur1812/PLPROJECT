@@ -294,12 +294,31 @@ async function startGame(settings, button) {
   }
 }
 
+// НАЧАЛО ЗАМЕНЫ (строка 296, сразу под функцией startGame)
 async function viewAuth(main) {
   let registering = false;
+  let savedUsername = '';
+  let savedPassword = '';
+
   const draw = () => {
     const error = h('p', { class: 'error', role: 'alert' });
-    const username = h('input', { type: 'text', id: 'u', autocomplete: 'username', required: true, maxlength: 20 });
-    const password = h('input', { type: 'password', id: 'p', autocomplete: registering ? 'new-password' : 'current-password', required: true });
+    const username = h('input', {
+      type: 'text',
+      id: 'u',
+      autocomplete: 'username',
+      required: true,
+      maxlength: 20,
+      value: savedUsername,
+      oninput: (e) => { savedUsername = e.target.value; },
+    });
+    const password = h('input', {
+      type: 'password',
+      id: 'p',
+      autocomplete: registering ? 'new-password' : 'current-password',
+      required: true,
+      value: savedPassword,
+      oninput: (e) => { savedPassword = e.target.value; },
+    });
     const submit = h('button', { class: 'btn big', type: 'submit' }, registering ? 'Create account' : 'Log in');
     const form = h('form', {
       onsubmit: async (event) => {
@@ -307,7 +326,10 @@ async function viewAuth(main) {
         submit.disabled = true;
         error.textContent = '';
         try {
-          const session = await api(`/api/auth/${registering ? 'register' : 'login'}`, { method: 'POST', body: { username: username.value, password: password.value } });
+          const session = await api(`/api/auth/${registering ? 'register' : 'login'}`, {
+            method: 'POST',
+            body: { username: username.value, password: password.value },
+          });
           state.token = session.token;
           state.user = session.user;
           localStorage.setItem('wf_token', session.token);
@@ -327,11 +349,21 @@ async function viewAuth(main) {
       h('p', { class: 'muted' }, 'Pick any theme, play the daily word, challenge friends.'),
       form,
       h('p', { class: 'muted' }, registering ? 'Already have an account? ' : 'New here? ',
-        h('a', { href: '#/login', onclick: (e) => { e.preventDefault(); registering = !registering; draw(); } }, registering ? 'Log in' : 'Create an account'))));
+        h('a', {
+          href: '#/login',
+          onclick: (e) => {
+            e.preventDefault();
+            savedUsername = username.value;
+            savedPassword = password.value;
+            registering = !registering;
+            draw();
+          },
+        }, registering ? 'Log in' : 'Create an account'))));
     username.focus();
   };
   draw();
 }
+// КОНЕЦ ЗАМЕНЫ (дальше идёт async function viewHome)
 
 async function viewHome(main, ctx) {
   const settings = loadSettings();
