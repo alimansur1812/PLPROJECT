@@ -127,7 +127,7 @@ const leaksWord = (text, word) => text.toLowerCase().replace(/ё/g, 'е').includ
 const short = (value, max) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
 
 // Автоматическая очистка любых технических префиксов из подсказок
-function sanitizeHintText(text) {
+export function sanitizeHintText(text) {
   if (!text || typeof text !== 'string') return '';
   let cleaned = text.trim();
   // Срезаем фразы вроде "Артефакт общего назначения.", "Lore concept:", "A location type; " и т.п.
